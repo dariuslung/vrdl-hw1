@@ -1,5 +1,5 @@
 # NYCU Visual Recognition using Deep Learning - Spring 2026 - HW1
----
+
 ## Introduction
 
 This repository contains a highly optimized, custom image classification pipeline designed to classify images across 100 distinct categories. Built on a PyTorch framework, the core model utilizes a modified **ResNet-50 backbone** integrated with **Squeeze-and-Excitation (SE) attention mechanisms** at every bottleneck stage. 
@@ -11,11 +11,7 @@ Designed to maximize representational efficiency while strictly adhering to a su
 * **Class Balancing:** Utilizes a weighted random sampler to ensure balanced batch generation across all 100 classes.
 * **Test-Time Augmentation (TTA):** Averages predictions from multi-view inputs (original and horizontally flipped) during inference to boost generalization and stability.
 
----
 ## Environment Setup
-### Prerequisites
-
-Ensure you have Python 3.8+ installed. The pipeline requires a CUDA-enabled GPU for optimal training times, though it will fall back to CPU if necessary.
 
 ### Dependencies
 
@@ -38,6 +34,7 @@ pip install matplotlib tqdm pillow tensorboard
 ```
 
 ## Usage
+
 ### 1. Dataset Structure
 
 Ensure your dataset is organized in standard PyTorch `ImageFolder` format within the `./data` directory:
@@ -60,9 +57,7 @@ data/
 
 To initiate the training pipeline with progressive unfreezing and data augmentation, execute the training script:
 
-Bash
-
-```
+```bash
 python train.py
 ```
 
@@ -81,3 +76,4 @@ python inference.py
 - **Outputs:** This will evaluate all images in the `./data/test` directory and generate a `prediction.csv` file containing two columns: `image_name` and `pred_label`.
 
 ## Performance Snapshot
+<img width="1264" height="513" alt="Screenshot 2026-03-26 213604_censored" src="https://github.com/user-attachments/assets/f99aa46f-0c82-447c-b2bc-76b2b8fd3b54" />
