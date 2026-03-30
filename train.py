@@ -45,7 +45,6 @@ class CustomResNet50SE(nn.Module):
         self.layer3 = backbone.layer3
         self.layer4 = backbone.layer4
         
-        # ResNet-50 uses bottleneck blocks, altering the output channels
         self.se1 = SqueezeExcitation(256)
         self.se2 = SqueezeExcitation(512)
         self.se3 = SqueezeExcitation(1024)
@@ -160,14 +159,14 @@ def get_data_loaders(dataset_base_path, batch_size=32, num_workers=4):
 def initialize_model_and_optimizer(num_classes, learning_rate):
     model = CustomResNet50SE(num_classes=num_classes)
     
-    # Initial phase: Freeze all layers except layer4, SE blocks, and classification head
     for name, param in model.named_parameters():
         if "classifier_head" not in name and "se" not in name and "layer4" not in name:
             param.requires_grad = False
             
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
     
-    loss_criterion = nn.CrossEntropyLoss()
+    # Initialize CrossEntropyLoss with label_smoothing
+    loss_criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     model_optimizer = optim.AdamW(trainable_params, lr=learning_rate, weight_decay=1e-4)
     
     lr_scheduler = ReduceLROnPlateau(
@@ -181,7 +180,6 @@ def initialize_model_and_optimizer(num_classes, learning_rate):
 
 
 def update_optimizer_for_unfreezing(model, learning_rate):
-    """Re-initializes the optimizer and scheduler when new layers are unfrozen."""
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
     new_optimizer = optim.AdamW(trainable_params, lr=learning_rate, weight_decay=1e-4)
     new_scheduler = ReduceLROnPlateau(
@@ -193,7 +191,28 @@ def update_optimizer_for_unfreezing(model, learning_rate):
     return new_optimizer, new_scheduler
 
 
-def train_one_epoch(model, data_loader, loss_criterion, optimizer, device):
+def mixup_data(x, y, alpha=0.2, device='cuda'):
+    """Generates mixed inputs and multiple targets for MixUp."""
+    if alpha > 0:
+        lam = torch.distributions.Beta(alpha, alpha).sample().item()
+    else:
+        lam = 1
+
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(device)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    
+    return mixed_x, y_a, y_b, lam
+
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    """Calculates the loss using the mixed targets."""
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
+
+def train_one_epoch(model, data_loader, loss_criterion, optimizer, device, mixup_alpha=0.2):
     model.train()
     running_loss = 0.0
     correct_predictions = 0
@@ -205,9 +224,14 @@ def train_one_epoch(model, data_loader, loss_criterion, optimizer, device):
         inputs = inputs.to(device)
         labels = labels.to(device)
         
+        # Apply MixUp
+        inputs, targets_a, targets_b, lam = mixup_data(inputs, labels, alpha=mixup_alpha, device=device)
+        
         optimizer.zero_grad()
         outputs = model(inputs)
-        loss = loss_criterion(outputs, labels)
+        
+        # Calculate MixUp loss
+        loss = mixup_criterion(loss_criterion, outputs, targets_a, targets_b, lam)
         
         loss.backward()
         optimizer.step()
@@ -216,7 +240,10 @@ def train_one_epoch(model, data_loader, loss_criterion, optimizer, device):
         running_loss += loss.item() * current_batch_size
         _, predicted = torch.max(outputs, 1)
         total_samples += labels.size(0)
-        correct_predictions += (predicted == labels).sum().item()
+        
+        # Approximation of training accuracy using the dominant class target
+        correct_predictions += (lam * predicted.eq(targets_a).sum().item() + 
+                                (1 - lam) * predicted.eq(targets_b).sum().item())
         
         current_loss = running_loss / total_samples
         current_acc = correct_predictions / total_samples
@@ -291,12 +318,11 @@ def plot_training_metrics(train_losses, valid_losses, train_accs, valid_accs):
 if __name__ == "__main__":
     target_categories = 100
     dataset_directory = "./data"
-    total_epochs = 35
+    total_epochs = 40 
     initial_learning_rate = 0.001
     
-    # Progressive Unfreezing Configuration
-    unfreeze_layer3_epoch = 12
-    unfreeze_layer2_epoch = 22
+    unfreeze_layer3_epoch = 15
+    unfreeze_layer2_epoch = 25
     
     compute_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -317,18 +343,14 @@ if __name__ == "__main__":
     
     best_valid_loss = float('inf')
     model_save_path = "best_custom_resnet50_model.pth"
-    tensorboard_writer = SummaryWriter("runs/custom_resnet50_experiment_01")
+    tensorboard_writer = SummaryWriter("runs/custom_resnet50_mixup_experiment")
     
     for epoch in range(1, total_epochs + 1):
-        print(f"\nEpoch {epoch}/{total_epochs}")
-        print("-" * 20)
         
-        # Progressive Unfreezing Logic
         if epoch == unfreeze_layer3_epoch:
             print(f"\n[Epoch {epoch}] Unfreezing layer3...")
             for param in classification_model.layer3.parameters():
                 param.requires_grad = True
-            # Re-initialize optimizer with a lower learning rate for fine-tuning
             optimizer, scheduler = update_optimizer_for_unfreezing(classification_model, learning_rate=1e-4)
             
         elif epoch == unfreeze_layer2_epoch:
@@ -337,10 +359,11 @@ if __name__ == "__main__":
                 param.requires_grad = True
             for param in classification_model.layer1.parameters():
                 param.requires_grad = True
-            # Further reduce learning rate as deeper layers are updated
             optimizer, scheduler = update_optimizer_for_unfreezing(classification_model, learning_rate=1e-5)
             
-        train_loss, train_acc = train_one_epoch(classification_model, loaders["train"], criterion, optimizer, compute_device)
+        train_loss, train_acc = train_one_epoch(
+            classification_model, loaders["train"], criterion, optimizer, compute_device, mixup_alpha=0.2
+        )
         valid_loss, valid_acc = evaluate_model(classification_model, loaders["valid"], criterion, compute_device)
         
         scheduler.step(valid_loss)
@@ -353,9 +376,6 @@ if __name__ == "__main__":
         current_lr = optimizer.param_groups[0]['lr']
         tensorboard_writer.add_scalar("Learning_Rate", current_lr, epoch)
         
-        print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
-        print(f"Valid Loss: {valid_loss:.4f} | Valid Acc: {valid_acc:.4f} | LR: {current_lr}")
-        
         history_train_loss.append(train_loss)
         history_valid_loss.append(valid_loss)
         history_train_acc.append(train_acc)
@@ -364,7 +384,6 @@ if __name__ == "__main__":
         if valid_loss < best_valid_loss:
             best_valid_loss = valid_loss
             torch.save(classification_model.state_dict(), model_save_path)
-            print(f"Validation loss decreased to {best_valid_loss:.4f}. Model saved to '{model_save_path}'.")
 
     plot_training_metrics(history_train_loss, history_valid_loss, history_train_acc, history_valid_acc)
     tensorboard_writer.close()

@@ -3,7 +3,6 @@ import csv
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
-import torchvision.transforms.functional as F
 import torchvision.models as models
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
@@ -42,7 +41,6 @@ class CustomResNet50SE(nn.Module):
         self.layer3 = backbone.layer3
         self.layer4 = backbone.layer4
         
-        # Updated to match ResNet-50 bottleneck block output channels
         self.se1 = SqueezeExcitation(256)
         self.se2 = SqueezeExcitation(512)
         self.se3 = SqueezeExcitation(1024)
@@ -107,6 +105,19 @@ class FlatImageDataset(Dataset):
         return image_data, image_name_no_ext
 
 
+class StackAndNormalizeCrops:
+    """
+    A picklable class to replace the lambda function for 10-Crop TTA.
+    Processes a tuple of PIL Image crops into a single stacked tensor.
+    """
+    def __init__(self, mean, std):
+        self.to_tensor = transforms.ToTensor()
+        self.normalize = transforms.Normalize(mean=mean, std=std)
+
+    def __call__(self, crops):
+        return torch.stack([self.normalize(self.to_tensor(crop)) for crop in crops])
+
+
 def initialize_inference_model(num_classes, checkpoint_path, device):
     model = CustomResNet50SE(num_classes=num_classes)
     model.load_state_dict(torch.load(checkpoint_path, map_location=device))
@@ -122,11 +133,11 @@ def run_inference_and_save_csv(test_directory, checkpoint_path, output_csv_path,
     image_mean = [0.485, 0.456, 0.406]
     image_std = [0.229, 0.224, 0.225]
     
+    # Updated 10-Crop Test-Time Augmentation Transform using the picklable class
     inference_transform = transforms.Compose([
         transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=image_mean, std=image_std)
+        transforms.TenCrop(224),
+        StackAndNormalizeCrops(mean=image_mean, std=image_std)
     ])
     
     test_dataset = FlatImageDataset(directory_path=test_directory, transform=inference_transform)
@@ -135,28 +146,19 @@ def run_inference_and_save_csv(test_directory, checkpoint_path, output_csv_path,
     inference_model = initialize_inference_model(num_classes, checkpoint_path, compute_device)
     
     predictions_list = []
-    
-    # Load mapping to the appropriate device
     class_mapping = torch.load("class_mapping.pth", map_location=compute_device)
     
-    print(f"Starting inference on {len(test_dataset)} images with 2-view TTA...")
+    print(f"Starting inference on {len(test_dataset)} images using 10-Crop TTA...")
     
     with torch.no_grad():
         for images, image_names in test_loader:
-            images = images.to(compute_device)
+            bs, n_crops, c, h, w = images.size()
             
-            # Test-Time Augmentation (TTA) Strategy
-            # View 1: Original Image
-            outputs_original = inference_model(images)
+            images = images.view(-1, c, h, w).to(compute_device)
+            outputs = inference_model(images)
             
-            # View 2: Horizontally Flipped Image
-            images_flipped = F.hflip(images)
-            outputs_flipped = inference_model(images_flipped)
-            
-            # Average the logits from both views
-            averaged_outputs = (outputs_original + outputs_flipped) / 2.0
-            
-            _, predicted_classes = torch.max(averaged_outputs, 1)
+            outputs = outputs.view(bs, n_crops, -1).mean(dim=1)
+            _, predicted_classes = torch.max(outputs, 1)
             
             for img_name, pred_class in zip(image_names, predicted_classes):
                 actual_class_name = class_mapping[pred_class.item()]
@@ -173,7 +175,6 @@ def run_inference_and_save_csv(test_directory, checkpoint_path, output_csv_path,
 
 if __name__ == "__main__":
     target_test_directory = "./data/test" 
-    # Updated to the new ResNet-50 checkpoint name
     model_checkpoint = "best_custom_resnet50_model.pth"
     output_filename = "prediction.csv"
     target_categories = 100
