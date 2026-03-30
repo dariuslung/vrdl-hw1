@@ -1,4 +1,4 @@
-# NYCU Visual Recognition using Deep Learning - Spring 2026 - HW1
+# NYCU Visual Recognition using Deep Learning - Spring 2026 - Homework 1
 
 ## Introduction
 
