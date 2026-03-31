@@ -2,14 +2,15 @@
 
 ## Introduction
 
-This repository contains a highly optimized, custom image classification pipeline designed to classify images across 100 distinct categories. Built on a PyTorch framework, the core model utilizes a modified **ResNet-50 backbone** integrated with **Squeeze-and-Excitation (SE) attention mechanisms** at every bottleneck stage. 
+This repository contains a high-performance image classification pipeline built in PyTorch, designed to classify images into 100 distinct categories. To maximize representational efficiency within a strict 100-million parameter limit, the core architecture utilizes a custom **ResNet-101** backbone enhanced with **Squeeze-and-Excitation (SE)** channel attention modules.
 
-Designed to maximize representational efficiency while strictly adhering to a sub-100 million parameter budget (operating at ~26M parameters), the pipeline includes several advanced training and inference strategies to prevent overfitting on moderately sized datasets (~20k input data size):
+The training and inference pipelines are heavily optimized to prevent overfitting and ensure robust generalization on unseen test data, particularly for datasets with limited samples (e.g., ~20,000 images). 
 
-* **Progressive Unfreezing:** Leverages ImageNet pre-trained weights, gradually unfreezing deeper residual layers while decaying the learning rate to adapt to the specific dataset without catastrophic forgetting.
-* **Aggressive Regularization:** Employs `RandAugment` and `RandomErasing` during training, coupled with a heavily regularized, custom dropout classification head.
-* **Class Balancing:** Utilizes a weighted random sampler to ensure balanced batch generation across all 100 classes.
-* **Test-Time Augmentation (TTA):** Averages predictions from multi-view inputs (original and horizontally flipped) during inference to boost generalization and stability.
+Key optimizations include:
+* **Advanced Regularization:** Implementation of Label Smoothing and MixUp data augmentation to penalize overconfident predictions and smooth class boundaries.
+* **Dynamic Learning Rate:** Utilization of a `OneCycleLR` scheduler to proactively map the loss landscape and escape suboptimal local minima.
+* **Stochastic Weight Averaging (SWA):** Averaging model weights over the final training epochs to ensure the network settles in a flat, robust minimum, significantly reducing leaderboard variance.
+* **Robust Inference:** A multiprocessing-safe 10-Crop Test-Time Augmentation (TTA) strategy combined with Soft-Voting Ensembling to merge the predictive confidence of multiple checkpoints.
 
 ## Environment Setup
 
@@ -55,25 +56,33 @@ data/
 
 ### 2. Training the Model
 
-To initiate the training pipeline with progressive unfreezing and data augmentation, execute the training script:
+To initiate the training pipeline, execute the `train.py` script. This will automatically handle dataset loading, apply the OneCycle learning rate schedule, and transition into the SWA phase during the final 25% of epochs.
 
-```bash
+```
 python train.py
 ```
 
+- **Outputs:** The script generates a `class_mapping.pth` file for inference decoding, logs metrics to TensorBoard (`runs/`), and saves two checkpoints: the single best epoch (`best_custom_resnet101_model.pth`) and the averaged weights (`best_swa_resnet101_model.pth`).
 - **Monitoring:** The script tracks metrics using TensorBoard. You can view real-time training and validation curves by running `tensorboard --logdir=runs` in a separate terminal.
-- **Outputs:** `best_custom_resnet50_model.pth`: The saved weights of the model at its lowest validation loss.
-    - `class_mapping.pth`: A serialized dictionary mapping tensor indices to human-readable class names.
-    - `training_metrics.png`: A static plot of the loss and accuracy over all epochs.
 
 ### 3. Running Inference
 
-To generate predictions on the unlabelled test set using the trained weights and Test-Time Augmentation, run:
+To generate predictions on the test set, you can use either the standard inference script or the ensemble script for maximum accuracy.
+
+**Standard 10-Crop Inference:** Targets a single model checkpoint (defaults to the SWA model) and applies 10-Crop TTA.
+
 ```bash
 python inference.py
 ```
 
-- **Outputs:** This will evaluate all images in the `./data/test` directory and generate a `prediction.csv` file containing two columns: `image_name` and `pred_label`.
+**Ensemble Inference (Recommended):** Loads both the best single-epoch baseline model and the SWA model into memory, running 10-Crop TTA on both and fusing their logits via Soft Voting.
+
+```bash
+python ensemble_inference.py
+```
+
+- **Outputs:** Both scripts will parse the test directory and generate a `prediction.csv` file mapping each image filename to its predicted class string.
 
 ## Performance Snapshot
-<img width="1264" height="513" alt="Screenshot 2026-03-26 213604_censored" src="https://github.com/user-attachments/assets/f99aa46f-0c82-447c-b2bc-76b2b8fd3b54" />
+![Screenshot 2026-03-30 223224_censored](https://github.com/user-attachments/assets/d2da8ec8-4224-4fe2-baaf-b113b4c5ba24)
+
