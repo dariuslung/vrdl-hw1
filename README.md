@@ -7,10 +7,10 @@ This repository contains a high-performance image classification pipeline built 
 The training and inference pipelines are heavily optimized to prevent overfitting and ensure robust generalization on unseen test data, particularly for datasets with limited samples (e.g., ~20,000 images). 
 
 Key optimizations include:
-* **Advanced Regularization:** Implementation of Label Smoothing and MixUp data augmentation to penalize overconfident predictions and smooth class boundaries.
-* **Dynamic Learning Rate:** Utilization of a `OneCycleLR` scheduler to proactively map the loss landscape and escape suboptimal local minima.
+* **Progressive Transfer Learning:** The model utilizes pre-trained ImageNet weights with a targeted layer unfreezing schedule. Combined with a `ReduceLROnPlateau` scheduler, this allows the network to adapt to the new dataset without catastrophically forgetting its foundational edge and texture detectors.
+* **Balanced Regularization:** Implementation of Label Smoothing and light MixUp data augmentation to explicitly penalize overconfident predictions and smooth class boundaries, without destroying critical spatial features.
 * **Stochastic Weight Averaging (SWA):** Averaging model weights over the final training epochs to ensure the network settles in a flat, robust minimum, significantly reducing leaderboard variance.
-* **Robust Inference:** A multiprocessing-safe 10-Crop Test-Time Augmentation (TTA) strategy combined with Soft-Voting Ensembling to merge the predictive confidence of multiple checkpoints.
+* **Robust Inference:** A multiprocessing-safe 10-Crop Test-Time Augmentation (TTA) strategy combined with Soft-Voting Ensembling to mathematically fuse the predictive confidence of multiple checkpoints.
 
 ## Environment Setup
 
@@ -48,10 +48,13 @@ data/
 │   ├── 0/
 │   ├── ...
 │   └── 99/
-└── valid/
-    ├── 0/
-    ├── ...
-    └── 99/
+├── valid/
+│   ├── 0/
+│   ├── ...
+│   └── 99/
+└── test/
+    ├── test_image_1.jpg
+    └── ...
 ```
 
 ### 2. Training the Model
