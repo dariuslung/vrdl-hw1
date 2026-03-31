@@ -2,7 +2,7 @@
 
 ## Introduction
 
-This repository contains a high-performance image classification pipeline built in PyTorch, designed to classify images into 100 distinct categories. To maximize representational efficiency within a strict 100-million parameter limit, the core architecture utilizes a custom **ResNet-101** backbone enhanced with **Squeeze-and-Excitation (SE)** channel attention modules.
+This repository contains a high-performance image classification pipeline built in PyTorch, designed to classify images into 100 distinct categories. To maximize representational efficiency within a strict 100-million parameter limit, the core architecture utilizes a custom **ResNet-50** backbone enhanced with **Squeeze-and-Excitation (SE)** channel attention modules.
 
 The training and inference pipelines are heavily optimized to prevent overfitting and ensure robust generalization on unseen test data, particularly for datasets with limited samples (e.g., ~20,000 images). 
 
@@ -59,13 +59,13 @@ data/
 
 ### 2. Training the Model
 
-To initiate the training pipeline, execute the `train.py` script. This will automatically handle dataset loading, apply the OneCycle learning rate schedule, and transition into the SWA phase during the final 25% of epochs.
+To initiate the training pipeline, execute the `train.py` script. This handles dataset loading, class balancing, progressive unfreezing, and automatically transitions into the SWA phase during the final epochs.
 
-```
+```bash
 python train.py
 ```
 
-- **Outputs:** The script generates a `class_mapping.pth` file for inference decoding, logs metrics to TensorBoard (`runs/`), and saves two checkpoints: the single best epoch (`best_custom_resnet101_model.pth`) and the averaged weights (`best_swa_resnet101_model.pth`).
+- **Outputs:** The script generates a `class_mapping.pth` file for inference decoding, logs metrics to TensorBoard (`runs/`), and saves two checkpoints: the single best epoch (`best_custom_resnet50_model.pth`) and the averaged weights (`best_swa_resnet50_model.pth`).
 - **Monitoring:** The script tracks metrics using TensorBoard. You can view real-time training and validation curves by running `tensorboard --logdir=runs` in a separate terminal.
 
 ### 3. Running Inference
@@ -78,7 +78,7 @@ To generate predictions on the test set, you can use either the standard inferen
 python inference.py
 ```
 
-**Ensemble Inference (Recommended):** Loads both the best single-epoch baseline model and the SWA model into memory, running 10-Crop TTA on both and fusing their logits via Soft Voting.
+**Ensemble Inference (Recommended):** Loads both the best single-epoch baseline model (e.g., your 0.94 checkpoint) and the SWA model into memory, running 10-Crop TTA on both and fusing their logits via Soft Voting.
 
 ```bash
 python ensemble_inference.py
