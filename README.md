@@ -7,10 +7,11 @@ This repository contains a high-performance image classification pipeline built 
 The training and inference pipelines are heavily optimized to prevent overfitting and ensure robust generalization on unseen test data, particularly for datasets with limited samples (e.g., ~20,000 images). 
 
 Key optimizations include:
-* **Progressive Transfer Learning:** The model utilizes pre-trained ImageNet weights with a targeted layer unfreezing schedule. Combined with a `ReduceLROnPlateau` scheduler, this allows the network to adapt to the new dataset without catastrophically forgetting its foundational edge and texture detectors.
-* **Balanced Regularization:** Implementation of Label Smoothing and light MixUp data augmentation to explicitly penalize overconfident predictions and smooth class boundaries, without destroying critical spatial features.
-* **Stochastic Weight Averaging (SWA):** Averaging model weights over the final training epochs to ensure the network settles in a flat, robust minimum, significantly reducing leaderboard variance.
-* **Robust Inference:** A multiprocessing-safe 10-Crop Test-Time Augmentation (TTA) strategy combined with Soft-Voting Ensembling to mathematically fuse the predictive confidence of multiple checkpoints.
+- **Architectural Enhancements:** Upgraded the ResNet-50 backbone with **Squeeze-and-Excitation (SE)** modules to provide dynamic channel attention, allowing the network to actively focus on the most discriminative visual features.
+- **Progressive Transfer Learning:** Safely adapted pre-trained ImageNet weights to the new dataset using a targeted layer unfreezing schedule and a `ReduceLROnPlateau` learning rate strategy to prevent catastrophic forgetting.
+- **Balanced Regularization:** Deployed **Label Smoothing** and light **MixUp** augmentation—alongside a custom dropout classification head—to explicitly penalize overconfidence and smooth class boundaries without destroying critical spatial features.
+- **Stochastic Weight Averaging (SWA):** Averaged model weights over the final training epochs to ensure the network settles in a broad, flat minimum, significantly reducing private leaderboard variance.
+- **Robust Inference:** Combined a multiprocessing-safe **10-Crop Test-Time Augmentation (TTA)** strategy with **Soft-Voting Ensembling** to mathematically fuse the predictive confidence of multiple checkpoints.
 
 ## Environment Setup
 
@@ -78,7 +79,7 @@ To generate predictions on the test set, you can use either the standard inferen
 python inference.py
 ```
 
-**Ensemble Inference (Recommended):** Loads both the best single-epoch baseline model and the SWA model into memory, running 10-Crop TTA on both and fusing their logits via Soft Voting.
+**Ensemble Inference:** Loads two models into memory, running 10-Crop TTA on both and fusing their logits via Soft Voting.
 
 ```bash
 python ensemble_inference.py
@@ -88,4 +89,3 @@ python ensemble_inference.py
 
 ## Performance Snapshot
 ![Screenshot 2026-03-30 223224_censored](https://github.com/user-attachments/assets/d2da8ec8-4224-4fe2-baaf-b113b4c5ba24)
-

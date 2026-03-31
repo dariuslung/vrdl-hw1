@@ -1,16 +1,18 @@
 import os
+
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
-import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
-from torch.utils.data import WeightedRandomSampler, DataLoader
+import torchvision.transforms as transforms
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.optim.swa_utils import AveragedModel
-import matplotlib.pyplot as plt
-from tqdm import tqdm
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
 
 class SqueezeExcitation(nn.Module):
@@ -35,22 +37,22 @@ class CustomResNet50SE(nn.Module):
     def __init__(self, num_classes=100, dropout_rate=0.5):
         super().__init__()
         backbone = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-        
+
         self.conv1 = backbone.conv1
         self.bn1 = backbone.bn1
         self.relu = backbone.relu
         self.maxpool = backbone.maxpool
-        
+
         self.layer1 = backbone.layer1
         self.layer2 = backbone.layer2
         self.layer3 = backbone.layer3
         self.layer4 = backbone.layer4
-        
+
         self.se1 = SqueezeExcitation(256)
         self.se2 = SqueezeExcitation(512)
         self.se3 = SqueezeExcitation(1024)
         self.se4 = SqueezeExcitation(2048)
-        
+
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.classifier_head = nn.Sequential(
             nn.Flatten(),
@@ -66,33 +68,35 @@ class CustomResNet50SE(nn.Module):
 
         x = self.layer1(x)
         x = self.se1(x)
-        
+
         x = self.layer2(x)
         x = self.se2(x)
-        
+
         x = self.layer3(x)
         x = self.se3(x)
-        
+
         x = self.layer4(x)
         x = self.se4(x)
 
         x = self.global_pool(x)
         logits = self.classifier_head(x)
-        
+
         return logits
 
 
 def create_balanced_sampler(train_dataset):
     num_classes = len(train_dataset.classes)
     class_counts = [0] * num_classes
-    
+
     for _, label in train_dataset.samples:
         class_counts[label] += 1
-        
+
     class_weights = [1.0 / count for count in class_counts]
-    sample_weights = [class_weights[label] for _, label in train_dataset.samples]
+    sample_weights = [
+        class_weights[label] for _, label in train_dataset.samples
+    ]
     sample_weights_tensor = torch.DoubleTensor(sample_weights)
-    
+
     return WeightedRandomSampler(
         weights=sample_weights_tensor,
         num_samples=len(sample_weights_tensor),
@@ -125,8 +129,14 @@ def get_data_loaders(dataset_base_path, batch_size=32, num_workers=4):
     valid_dir = os.path.join(dataset_base_path, "valid")
 
     image_datasets = {
-        "train": datasets.ImageFolder(root=train_dir, transform=data_transforms["train"]),
-        "valid": datasets.ImageFolder(root=valid_dir, transform=data_transforms["valid"]),
+        "train": datasets.ImageFolder(
+            root=train_dir,
+            transform=data_transforms["train"]
+        ),
+        "valid": datasets.ImageFolder(
+            root=valid_dir,
+            transform=data_transforms["valid"]
+        ),
     }
 
     torch.save(image_datasets["train"].classes, "class_mapping.pth")
@@ -137,7 +147,7 @@ def get_data_loaders(dataset_base_path, batch_size=32, num_workers=4):
         "train": DataLoader(
             image_datasets["train"],
             batch_size=batch_size,
-            shuffle=False, 
+            shuffle=False,  # sampler=sampler prevents manual shuffling
             sampler=sampler,
             num_workers=num_workers,
             pin_memory=use_pin_memory
@@ -156,50 +166,66 @@ def get_data_loaders(dataset_base_path, batch_size=32, num_workers=4):
 
 def initialize_model_and_optimizer(num_classes, learning_rate):
     model = CustomResNet50SE(num_classes=num_classes)
-    
+
     # Re-implement safe freezing to protect ImageNet weights
     for name, param in model.named_parameters():
-        if "classifier_head" not in name and "se" not in name and "layer4" not in name:
+        if (
+            "classifier_head" not in name
+            and "se" not in name
+            and "layer4" not in name
+        ):
             param.requires_grad = False
-            
+
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
-    
+
     # Retain label smoothing
     loss_criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-    model_optimizer = optim.AdamW(trainable_params, lr=learning_rate, weight_decay=1e-4)
-    
+    model_optimizer = optim.AdamW(
+        trainable_params,
+        lr=learning_rate,
+        weight_decay=1e-4
+    )
+
     lr_scheduler = ReduceLROnPlateau(
-        model_optimizer, 
-        mode='min', 
-        factor=0.1, 
+        model_optimizer,
+        mode="min",
+        factor=0.1,
         patience=3
     )
-    
+
     return model, loss_criterion, model_optimizer, lr_scheduler
 
 
 def update_optimizer_for_unfreezing(model, learning_rate):
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
-    new_optimizer = optim.AdamW(trainable_params, lr=learning_rate, weight_decay=1e-4)
+    new_optimizer = optim.AdamW(
+        trainable_params,
+        lr=learning_rate,
+        weight_decay=1e-4
+    )
     new_scheduler = ReduceLROnPlateau(
-        new_optimizer, 
-        mode='min', 
-        factor=0.1, 
+        new_optimizer,
+        mode="min",
+        factor=0.1,
         patience=3
     )
     return new_optimizer, new_scheduler
 
 
-def apply_light_mixup(inputs, labels, alpha=0.2, device='cuda'):
+def apply_light_mixup(inputs, labels, alpha=0.2, device="cuda"):
     """Applies a light MixUp to prevent severe data distortion."""
-    lam = torch.distributions.Beta(alpha, alpha).sample().item() if alpha > 0 else 1.0
+    if alpha > 0:
+        lam = torch.distributions.Beta(alpha, alpha).sample().item()
+    else:
+        lam = 1.0
+
     batch_size = inputs.size(0)
     index = torch.randperm(batch_size).to(device)
 
     mixed_inputs = lam * inputs + (1 - lam) * inputs[index, :]
     targets_a = labels
     targets_b = labels[index]
-    
+
     return mixed_inputs, targets_a, targets_b, lam
 
 
@@ -211,28 +237,38 @@ def train_one_epoch(model, data_loader, loss_criterion, optimizer, device):
     model.train()
     running_loss = 0.0
     total_samples = 0
-    
+
     progress_bar = tqdm(data_loader, desc="Training", leave=False)
-    
+
     for inputs, labels in progress_bar:
         inputs = inputs.to(device)
         labels = labels.to(device)
-        
-        mixed_inputs, targets_a, targets_b, lam = apply_light_mixup(inputs, labels, device=device)
-        
+
+        mixed_inputs, targets_a, targets_b, lam = apply_light_mixup(
+            inputs,
+            labels,
+            device=device
+        )
+
         optimizer.zero_grad()
         outputs = model(mixed_inputs)
-        
-        loss = mix_criterion(loss_criterion, outputs, targets_a, targets_b, lam)
+
+        loss = mix_criterion(
+            loss_criterion,
+            outputs,
+            targets_a,
+            targets_b,
+            lam
+        )
         loss.backward()
         optimizer.step()
-        
+
         current_batch_size = inputs.size(0)
         running_loss += loss.item() * current_batch_size
         total_samples += labels.size(0)
-        
+
         progress_bar.set_postfix(loss=f"{(running_loss / total_samples):.4f}")
-        
+
     return running_loss / total_samples
 
 
@@ -241,100 +277,169 @@ def evaluate_model(model, data_loader, loss_criterion, device):
     running_loss = 0.0
     correct_predictions = 0
     total_samples = 0
-    
+
     progress_bar = tqdm(data_loader, desc="Validating", leave=False)
-    
+
     with torch.no_grad():
         for inputs, labels in progress_bar:
             inputs = inputs.to(device)
             labels = labels.to(device)
-            
+
             outputs = model(inputs)
             loss = loss_criterion(outputs, labels)
-            
+
             current_batch_size = inputs.size(0)
             running_loss += loss.item() * current_batch_size
             _, predicted = torch.max(outputs, 1)
             total_samples += labels.size(0)
             correct_predictions += (predicted == labels).sum().item()
-            
+
     epoch_loss = running_loss / total_samples
     epoch_accuracy = correct_predictions / total_samples
-    
+
     return epoch_loss, epoch_accuracy
+
+
+def count_model_parameters(model: torch.nn.Module) -> tuple[int, int]:
+    """
+    Calculates the total and trainable parameters of a PyTorch model.
+    """
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(
+        p.numel() for p in model.parameters() if p.requires_grad
+    )
+
+    return total_params, trainable_params
 
 
 if __name__ == "__main__":
     target_categories = 100
+
+    print_size = False
+    if print_size:
+        # Initialize your custom model
+        classification_model = CustomResNet50SE(num_classes=target_categories)
+
+        # Apply your specific freezing logic
+        for name, param in classification_model.named_parameters():
+            if (
+                "classifier_head" not in name
+                and "se" not in name
+                and "layer4" not in name
+                and "global_pool" not in name
+            ):
+                param.requires_grad = False
+
+        # Count the parameters
+        total, trainable = count_model_parameters(classification_model)
+
+        # Format with commas for readability
+        print(f"Total Parameters: {total:,}")
+        print(f"Trainable Parameters: {trainable:,}")
+        exit(0)
+
     dataset_directory = "./data"
     total_epochs = 35
     initial_learning_rate = 0.001
     batch_size = 32
-    
+
     unfreeze_layer3_epoch = 12
     unfreeze_layer2_epoch = 22
-    
-    compute_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
+    compute_device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
+
     if not os.path.exists(dataset_directory):
         exit(1)
-        
+
     loaders = get_data_loaders(dataset_directory, batch_size=batch_size)
-    classification_model, criterion, optimizer, scheduler = initialize_model_and_optimizer(
+
+    # Initialize model and optimizer
+    initial_setup = initialize_model_and_optimizer(
         num_classes=target_categories,
         learning_rate=initial_learning_rate
     )
+    classification_model, criterion, optimizer, scheduler = initial_setup
+
     classification_model = classification_model.to(compute_device)
-    
+
     # Initialize SWA
     swa_model = AveragedModel(classification_model)
     swa_start_epoch = 25
-    
-    best_valid_loss = float('inf')
+
+    best_valid_loss = float("inf")
     model_save_path = "best_custom_resnet50_model.pth"
     swa_save_path = "best_swa_resnet50_model.pth"
-    tensorboard_writer = SummaryWriter("runs/resnet50_stabilized")
-    
+    tensorboard_writer = SummaryWriter("runs/resnet50_GeM")
+
     for epoch in range(1, total_epochs + 1):
         print(f"\nEpoch {epoch}/{total_epochs}")
-        
+
         if epoch == unfreeze_layer3_epoch:
             print("Unfreezing layer3...")
             for param in classification_model.layer3.parameters():
                 param.requires_grad = True
-            optimizer, scheduler = update_optimizer_for_unfreezing(classification_model, learning_rate=1e-4)
-            
+            optimizer, scheduler = update_optimizer_for_unfreezing(
+                classification_model,
+                learning_rate=1e-4
+            )
+
         elif epoch == unfreeze_layer2_epoch:
             print("Unfreezing layer2 and layer1...")
             for param in classification_model.layer2.parameters():
                 param.requires_grad = True
             for param in classification_model.layer1.parameters():
                 param.requires_grad = True
-            optimizer, scheduler = update_optimizer_for_unfreezing(classification_model, learning_rate=1e-5)
-            
-        train_loss = train_one_epoch(classification_model, loaders["train"], criterion, optimizer, compute_device)
-        valid_loss, valid_acc = evaluate_model(classification_model, loaders["valid"], criterion, compute_device)
-        
+            optimizer, scheduler = update_optimizer_for_unfreezing(
+                classification_model,
+                learning_rate=1e-5
+            )
+
+        train_loss = train_one_epoch(
+            classification_model,
+            loaders["train"],
+            criterion,
+            optimizer,
+            compute_device
+        )
+        valid_loss, valid_acc = evaluate_model(
+            classification_model,
+            loaders["valid"],
+            criterion,
+            compute_device
+        )
+
         scheduler.step(valid_loss)
-        current_lr = optimizer.param_groups[0]['lr']
-        
-        print(f"Train Loss: {train_loss:.4f} | Valid Loss: {valid_loss:.4f} | Valid Acc: {valid_acc:.4f} | LR: {current_lr:.6f}")
-        
+        current_lr = optimizer.param_groups[0]["lr"]
+
+        print(
+            f"Train Loss: {train_loss:.4f} | "
+            f"Valid Loss: {valid_loss:.4f} | "
+            f"Valid Acc: {valid_acc:.4f} | "
+            f"LR: {current_lr:.6f}"
+        )
+
         tensorboard_writer.add_scalar("Loss/train", train_loss, epoch)
         tensorboard_writer.add_scalar("Loss/valid", valid_loss, epoch)
         tensorboard_writer.add_scalar("Accuracy/valid", valid_acc, epoch)
         tensorboard_writer.add_scalar("Learning_Rate", current_lr, epoch)
-        
+
         # SWA updates
         if epoch >= swa_start_epoch:
             swa_model.update_parameters(classification_model)
-        
+
         if valid_loss < best_valid_loss:
             best_valid_loss = valid_loss
             torch.save(classification_model.state_dict(), model_save_path)
-            
+
     # Finalize and save the SWA model
-    torch.optim.swa_utils.update_bn(loaders["train"], swa_model, device=compute_device)
+    torch.optim.swa_utils.update_bn(
+        loaders["train"],
+        swa_model,
+        device=compute_device
+    )
     torch.save(swa_model.module.state_dict(), swa_save_path)
+
     print(f"\nTraining complete. SWA Model saved to '{swa_save_path}'.")
     tensorboard_writer.close()

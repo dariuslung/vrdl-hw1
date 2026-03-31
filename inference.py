@@ -1,11 +1,12 @@
-import os
 import csv
+import os
+
 import torch
 import torch.nn as nn
-import torchvision.transforms as transforms
 import torchvision.models as models
-from torch.utils.data import Dataset, DataLoader
+import torchvision.transforms as transforms
 from PIL import Image
+from torch.utils.data import DataLoader, Dataset
 
 
 class SqueezeExcitation(nn.Module):
@@ -31,22 +32,22 @@ class CustomResNet50SE(nn.Module):
         super().__init__()
         # Backbone matches the stabilized train.py
         backbone = models.resnet50(weights=None)
-        
+
         self.conv1 = backbone.conv1
         self.bn1 = backbone.bn1
         self.relu = backbone.relu
         self.maxpool = backbone.maxpool
-        
+
         self.layer1 = backbone.layer1
         self.layer2 = backbone.layer2
         self.layer3 = backbone.layer3
         self.layer4 = backbone.layer4
-        
+
         self.se1 = SqueezeExcitation(256)
         self.se2 = SqueezeExcitation(512)
         self.se3 = SqueezeExcitation(1024)
         self.se4 = SqueezeExcitation(2048)
-        
+
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.classifier_head = nn.Sequential(
             nn.Flatten(),
@@ -62,19 +63,19 @@ class CustomResNet50SE(nn.Module):
 
         x = self.layer1(x)
         x = self.se1(x)
-        
+
         x = self.layer2(x)
         x = self.se2(x)
-        
+
         x = self.layer3(x)
         x = self.se3(x)
-        
+
         x = self.layer4(x)
         x = self.se4(x)
 
         x = self.global_pool(x)
         logits = self.classifier_head(x)
-        
+
         return logits
 
 
@@ -82,11 +83,14 @@ class FlatImageDataset(Dataset):
     def __init__(self, directory_path, transform=None):
         self.directory_path = directory_path
         self.transform = transform
-        self.valid_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".ppm", ".tif", ".tiff"}
-        
+        self.valid_extensions = {
+            ".jpg", ".jpeg", ".png", ".bmp", ".ppm", ".tif", ".tiff"
+        }
+
         self.image_filenames = sorted([
             file_name for file_name in os.listdir(directory_path)
-            if os.path.splitext(file_name)[1].lower() in self.valid_extensions
+            if os.path.splitext(file_name)[1].lower()
+            in self.valid_extensions
         ])
 
     def __len__(self):
@@ -95,14 +99,14 @@ class FlatImageDataset(Dataset):
     def __getitem__(self, index):
         file_name = self.image_filenames[index]
         file_path = os.path.join(self.directory_path, file_name)
-        
+
         image_data = Image.open(file_path).convert("RGB")
-        
+
         if self.transform is not None:
             image_data = self.transform(image_data)
-            
+
         image_name_no_ext = os.path.splitext(file_name)[0]
-        
+
         return image_data, image_name_no_ext
 
 
@@ -110,12 +114,15 @@ class StackAndNormalizeCrops:
     """
     Picklable class to process the 10 crops into a single tensor stack.
     """
+
     def __init__(self, mean, std):
         self.to_tensor = transforms.ToTensor()
         self.normalize = transforms.Normalize(mean=mean, std=std)
 
     def __call__(self, crops):
-        return torch.stack([self.normalize(self.to_tensor(crop)) for crop in crops])
+        return torch.stack(
+            [self.normalize(self.to_tensor(crop)) for crop in crops]
+        )
 
 
 def initialize_inference_model(num_classes, checkpoint_path, device):
@@ -127,64 +134,100 @@ def initialize_inference_model(num_classes, checkpoint_path, device):
     return model
 
 
-def run_inference_and_save_csv(test_directory, checkpoint_path, output_csv_path, num_classes=100, batch_size=32):
-    compute_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def run_inference_and_save_csv(
+    test_directory,
+    checkpoint_path,
+    output_csv_path,
+    num_classes=100,
+    batch_size=32
+):
+    compute_device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
     print(f"Running inference on device: {compute_device}")
-    
+
     image_mean = [0.485, 0.456, 0.406]
     image_std = [0.229, 0.224, 0.225]
-    
+
     inference_transform = transforms.Compose([
         transforms.Resize(256),
         transforms.TenCrop(224),
         StackAndNormalizeCrops(mean=image_mean, std=image_std)
     ])
-    
-    test_dataset = FlatImageDataset(directory_path=test_directory, transform=inference_transform)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-    
-    inference_model = initialize_inference_model(num_classes, checkpoint_path, compute_device)
-    
+
+    test_dataset = FlatImageDataset(
+        directory_path=test_directory,
+        transform=inference_transform
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4
+    )
+
+    inference_model = initialize_inference_model(
+        num_classes,
+        checkpoint_path,
+        compute_device
+    )
+
     predictions_list = []
-    class_mapping = torch.load("class_mapping.pth", map_location=compute_device)
-    
-    print(f"Starting inference on {len(test_dataset)} images using 10-Crop TTA...")
-    
+    class_mapping = torch.load(
+        "class_mapping.pth",
+        map_location=compute_device
+    )
+
+    print(
+        f"Starting inference on {len(test_dataset)} "
+        f"images using 10-Crop TTA..."
+    )
+
     with torch.no_grad():
         for images, image_names in test_loader:
             bs, n_crops, c, h, w = images.size()
-            
+
             # Reshape to treat the 10 crops as a larger batch
             images = images.view(-1, c, h, w).to(compute_device)
             outputs = inference_model(images)
-            
+
             # Average the logits across the 10 crops for each original image
             outputs = outputs.view(bs, n_crops, -1).mean(dim=1)
             _, predicted_classes = torch.max(outputs, 1)
-            
+
             for img_name, pred_class in zip(image_names, predicted_classes):
                 actual_class_name = class_mapping[pred_class.item()]
                 predictions_list.append((img_name, actual_class_name))
-                
-    with open(output_csv_path, mode="w", newline="", encoding="utf-8") as csv_file:
+
+    with open(
+        output_csv_path,
+        mode="w",
+        newline="",
+        encoding="utf-8"
+    ) as csv_file:
         csv_writer = csv.writer(csv_file)
         csv_writer.writerow(["image_name", "pred_label"])
         for img_name, pred_class in predictions_list:
             csv_writer.writerow([img_name, pred_class])
-            
-    print(f"Inference complete. Predictions successfully saved to '{output_csv_path}'.")
+
+    print(
+        f"Inference complete. "
+        f"Predictions successfully saved to '{output_csv_path}'."
+    )
 
 
 if __name__ == "__main__":
-    target_test_directory = "./data/test" 
-    
+    target_test_directory = "./data/test"
+
     # Target the SWA ResNet-50 checkpoint
     model_checkpoint = "best_swa_resnet50_model.pth"
     output_filename = "prediction.csv"
     target_categories = 100
-    
+
     if not os.path.exists(target_test_directory):
-        print(f"Error: Target directory '{target_test_directory}' not found.")
+        print(
+            f"Error: Target directory '{target_test_directory}' not found."
+        )
     else:
         run_inference_and_save_csv(
             test_directory=target_test_directory,
