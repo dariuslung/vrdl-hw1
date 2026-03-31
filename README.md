@@ -24,15 +24,15 @@ This project requires **Python 3.11** and is optimized for GPU acceleration usin
 conda create -n resnet_env python=3.11
 conda activate resnet_env
 ```
-   
-2. Install PyTorch and TorchVision with CUDA 12.4 support:
+
+2. **Install PyTorch and TorchVision with CUDA 12.4 support:**
 ```bash
-pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
 ```
 
-3. Install additional dependencies:   
+3. **Install additional dependencies:**
 ```bash
-pip install matplotlib tqdm pillow tensorboard
+conda install matplotlib tqdm pillow tensorboard scikit-learn seaborn -c conda-forge
 ```
 
 ## Usage
