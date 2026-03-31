@@ -78,7 +78,7 @@ To generate predictions on the test set, you can use either the standard inferen
 python inference.py
 ```
 
-**Ensemble Inference (Recommended):** Loads both the best single-epoch baseline model (e.g., your 0.94 checkpoint) and the SWA model into memory, running 10-Crop TTA on both and fusing their logits via Soft Voting.
+**Ensemble Inference (Recommended):** Loads both the best single-epoch baseline model and the SWA model into memory, running 10-Crop TTA on both and fusing their logits via Soft Voting.
 
 ```bash
 python ensemble_inference.py
